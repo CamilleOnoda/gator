@@ -125,7 +125,50 @@ func handlerAgg(s *state, cmd command) error {
 	return nil
 }
 
-// runs a given command with the provided state if it exists.
+func handlerAddFeed(s *state, cmd command) error {
+	if len(cmd.args) != 2 {
+		return fmt.Errorf("Expected exactly 2 arguments after 'addfeed' command")
+	}
+
+	currentUser, err := s.db.GetUser(context.Background(), s.cfg.Current_user_name)
+	if err != nil {
+		return fmt.Errorf("Error getting user: %v", err)
+	}
+
+	feed, er := s.db.CreateFeed(context.Background(), database.CreateFeedParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Name:      cmd.args[0],
+		Url:       cmd.args[1],
+		UserID:    currentUser.ID,
+	})
+	if er != nil {
+		return fmt.Errorf("Error creating feed: %v", er)
+	}
+
+	fmt.Printf("Feed '%s' added successfully for user '%s'\n", feed.Name, currentUser.Name)
+	fmt.Printf("Feed url: %s\nCreated at: %s\nUpdated at: %s", feed.Url, feed.CreatedAt, feed.UpdatedAt)
+	return nil
+}
+func handlerGetFeeds(s *state, cmd command) error {
+	if len(cmd.args) != 0 {
+		return fmt.Errorf("Expected no arguments after 'feeds' command")
+	}
+
+	feed, err := s.db.GetFeeds(context.Background())
+	if err != nil {
+		return fmt.Errorf("Error getting feeds: %v", err)
+	}
+
+	fmt.Println("Feeds:")
+	for _, f := range feed {
+		fmt.Printf("- %s (by %s): %s\n", f.Name, f.UserName, f.Url)
+	}
+
+	return nil
+}
+
 func (c *CLIcommands) run(s *state, cmd command) error {
 	if handler, exists := c.cmd[cmd.name]; exists {
 		return handler(s, cmd)
@@ -134,7 +177,6 @@ func (c *CLIcommands) run(s *state, cmd command) error {
 	}
 }
 
-// registers a new handler function for a command name
 func (c *CLIcommands) register(name string, f func(*state, command) error) {
 	c.cmd[name] = f
 }
@@ -202,6 +244,8 @@ func main() {
 	cliCommands.register("reset", handlerReset)
 	cliCommands.register("users", handlerGetUsers)
 	cliCommands.register("agg", handlerAgg)
+	cliCommands.register("addfeed", handlerAddFeed)
+	cliCommands.register("feeds", handlerGetFeeds)
 
 	cliArgs := os.Args[1:]
 	/*if len(cliArgs) < 2 {
