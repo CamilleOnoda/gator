@@ -151,6 +151,7 @@ func handlerAddFeed(s *state, cmd command) error {
 	fmt.Printf("Feed url: %s\nCreated at: %s\nUpdated at: %s", feed.Url, feed.CreatedAt, feed.UpdatedAt)
 	return nil
 }
+
 func handlerGetFeeds(s *state, cmd command) error {
 	if len(cmd.args) != 0 {
 		return fmt.Errorf("Expected no arguments after 'feeds' command")
@@ -169,6 +170,36 @@ func handlerGetFeeds(s *state, cmd command) error {
 	return nil
 }
 
+func handlerFeedFollow(s *state, cmd command) error {
+	if len(cmd.args) != 1 {
+		return fmt.Errorf("Expected a URL after 'follow' command")
+	}
+
+	currentUser, err := s.db.GetUser(context.Background(), s.cfg.Current_user_name)
+	if err != nil {
+		return fmt.Errorf("Error getting user: %v", err)
+	}
+
+	feedData, err := s.db.GetFeedByURL(context.Background(), cmd.args[0])
+	if err != nil {
+		return fmt.Errorf("Error getting feed: %v", err)
+	}
+
+	_, err = s.db.CreateFeedFollow(context.Background(), database.CreateFeedFollowParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		UserID:    currentUser.ID,
+		FeedID:    feedData.ID,
+	})
+	if err != nil {
+		return fmt.Errorf("Error following feed: %v", err)
+	}
+
+	fmt.Printf("Successfully followed feed: %s\nUser: %s\n", feedData.Name, currentUser.Name)
+	return nil
+}
+
 func (c *CLIcommands) run(s *state, cmd command) error {
 	if handler, exists := c.cmd[cmd.name]; exists {
 		return handler(s, cmd)
@@ -182,7 +213,7 @@ func (c *CLIcommands) register(name string, f func(*state, command) error) {
 }
 
 func fetchFeed(ctx context.Context, feedURL string) (*config.RSSFeed, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feedURL, nil)
@@ -246,13 +277,9 @@ func main() {
 	cliCommands.register("agg", handlerAgg)
 	cliCommands.register("addfeed", handlerAddFeed)
 	cliCommands.register("feeds", handlerGetFeeds)
+	cliCommands.register("follow", handlerFeedFollow)
 
 	cliArgs := os.Args[1:]
-	/*if len(cliArgs) < 2 {
-		log.Fatal(fmt.Errorf(
-			"Expected at least 2 arguments: command name and its arguments"))
-	}*/
-
 	cmd := command{
 		name: cliArgs[0],
 		args: cliArgs[1:],
