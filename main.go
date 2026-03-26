@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,16 +115,23 @@ func handlerGetUsers(s *state, cmd command) error {
 }
 
 func handlerAgg(s *state, cmd command) error {
-	if len(cmd.args) != 0 {
-		return fmt.Errorf("Expected no arguments after 'agg' command")
+	if len(cmd.args) != 1 {
+		return fmt.Errorf("Expected to receive a time duration (e.g. '10s', '1m') after 'agg' command")
 	}
-	feedURL := "https://www.wagslane.dev/index.xml"
-	rssFeed, err := fetchFeed(context.Background(), feedURL)
+
+	time_between_reqs, err := time.ParseDuration(cmd.args[0])
 	if err != nil {
-		return fmt.Errorf("Error fetching feed: %v", err)
+		return fmt.Errorf("Error parsing time duration: %v", err)
 	}
-	fmt.Println(rssFeed)
-	return nil
+
+	fmt.Printf("Collecting feeds every %s...\n", time_between_reqs)
+
+	ticker := time.NewTicker(time_between_reqs)
+	defer ticker.Stop()
+
+	for ; ; <-ticker.C {
+		scrapeFeeds(s)
+	}
 }
 
 func handlerAddFeed(s *state, cmd command, user database.User) error {
@@ -273,6 +281,36 @@ func handlerUnfollow(s *state, cmd command, user database.User) error {
 
 }
 
+func handlerBrowse(s *state, cmd command, user database.User) error {
+	limit := 2
+	if len(cmd.args) == 1 {
+		num, err := strconv.Atoi(cmd.args[0])
+		if err != nil {
+			return fmt.Errorf("Error parsing limit argument: %v", err)
+		}
+		limit = num
+	} else if len(cmd.args) > 1 {
+		return fmt.Errorf("Usage: browse <limit>")
+	}
+
+	fmt.Println("Browsing posts...\n\n")
+
+	posts, err := s.db.GetPostsForUser(context.Background(), database.GetPostsForUserParams{
+		UserID: user.ID,
+		Limit:  int32(limit),
+	})
+	if err != nil {
+		return fmt.Errorf("Error getting posts: %v", err)
+	}
+
+	for i, post := range posts {
+		fmt.Printf("Post %d:\n\n", i+1)
+		fmt.Printf("Title: %s\n-- URL: %s\n-- Published: %v\n\n",
+			post.Title, post.Url, post.PublishedAt)
+	}
+	return nil
+}
+
 func (c *CLIcommands) run(s *state, cmd command) error {
 	if handler, exists := c.cmd[cmd.name]; exists {
 		return handler(s, cmd)
@@ -336,6 +374,55 @@ func middlewareLoggedIn(handler func(s *state, cmd command, user database.User) 
 	}
 }
 
+func scrapeFeeds(s *state) error {
+	feed, err := s.db.GetNextFeedToFetch(context.Background())
+	if err != nil {
+		return fmt.Errorf("error getting next feed to fetch: %v", err)
+	}
+	if feed.ID == uuid.Nil {
+		fmt.Println("No feeds to fetch")
+		return nil
+	}
+	if err := s.db.MarkFeedFetched(context.Background(), feed.ID); err != nil {
+		return fmt.Errorf("Error marking the feed as fetched: %v", err)
+	}
+
+	rssFeed, err := fetchFeed(context.Background(), feed.Url)
+	if err != nil {
+		return fmt.Errorf("Error fetching feed: %v", err)
+	}
+
+	for _, item := range rssFeed.Channel.Item {
+		formats := []string{time.RFC1123Z, time.RFC1123}
+		var pubDate time.Time
+		for _, format := range formats {
+			pubDate, err = time.Parse(format, item.PubDate)
+			if err == nil {
+				break
+			}
+		}
+		post, err := s.db.CreatePost(context.Background(), database.CreatePostParams{
+			ID:        uuid.New(),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			Title:     item.Title,
+			Url:       item.Link,
+			Description: sql.NullString{
+				String: item.Description,
+				Valid:  item.Description != ""},
+			PublishedAt: pubDate,
+			FeedID:      feed.ID,
+		})
+		if err != nil {
+			log.Printf("Error creating post: %v", err)
+		} else {
+			log.Printf("Post created: %s", post.Title)
+		}
+	}
+
+	return nil
+}
+
 func main() {
 	cfg, err := config.Read()
 	if err != nil {
@@ -363,6 +450,7 @@ func main() {
 	cliCommands.register("follow", middlewareLoggedIn(handlerFeedFollow))
 	cliCommands.register("following", middlewareLoggedIn(handlerFollowingFeeds))
 	cliCommands.register("unfollow", middlewareLoggedIn(handlerUnfollow))
+	cliCommands.register("browse", middlewareLoggedIn(handlerBrowse))
 
 	cliArgs := os.Args[1:]
 	cmd := command{
