@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	app "github.com/CamilleOnoda/gator/internal/app"
 	config "github.com/CamilleOnoda/gator/internal/config"
@@ -15,6 +16,16 @@ import (
 	services "github.com/CamilleOnoda/gator/internal/services"
 	"github.com/google/uuid"
 )
+
+func removeSpace(s string) string {
+	cleaned := make([]rune, 0, len(s))
+	for _, r := range s {
+		if !unicode.IsSpace(r) {
+			cleaned = append(cleaned, r)
+		}
+	}
+	return string(cleaned)
+}
 
 func MiddlewareLoggedIn(handler func(s *app.State, cmd app.Command, user database.User) error) func(*app.State, app.Command) error {
 	return func(s *app.State, cmd app.Command) error {
@@ -127,11 +138,17 @@ func HandlerAgg(s *app.State, cmd app.Command) error {
 }
 
 func HandlerAddFeed(s *app.State, cmd app.Command, user database.User) error {
-	if len(cmd.Args) != 2 {
-		return fmt.Errorf("Usage: addfeed <feed name> <feed url>")
+	if len(cmd.Args) <= 1 {
+		return fmt.Errorf("Usage: addfeed \"<feed-name>\" <feed url>")
 	}
-	feedName := cmd.Args[0]
-	feedURL := cmd.Args[1]
+	if len(cmd.Args) > 2 {
+		return fmt.Errorf("Usage: addfeed \"<feed-name>\" <feed url>. If your feed name has spaces, enclose it in quotes")
+	}
+	feedName := removeSpace(cmd.Args[0])
+	feedURL := removeSpace(cmd.Args[1])
+	if !strings.HasPrefix(feedURL, "https://") {
+		return fmt.Errorf("Feed URL must start with 'https://'")
+	}
 
 	feed, err := s.Db.GetFeedByURL(context.Background(), feedURL)
 	if err != nil && err != sql.ErrNoRows {
